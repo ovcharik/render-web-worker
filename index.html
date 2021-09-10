@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Рендер 10 000 точек в веб-воркере</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+    <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU"></script>
+    <script src="./coords.js" type="text/javascript"></script>
+
+    <style>
+      html, body {
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        margin: 0;
+        background-color: #e6f5d6;
+      }
+
+      #map {
+        width: 2000px;
+        height: 2000px;
+        margin: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <canvas id="canvas"></canvas>
+  </body>
+
+  <script type="text/javascript">
+    var createPinImage = (radius) => {
+      const rad = Math.PI / 180;
+
+      const size = radius * 2 + 2;
+      const sizeHalf = size / 2;
+      const pinCanvas = document.createElement("canvas");
+
+      pinCanvas.width = size;
+      pinCanvas.height = size;
+
+      const context = pinCanvas.getContext("2d");
+
+      context.fillStyle = "rgba(0, 0, 0, 0.0)";
+      context.fillRect(0, 0, size, size);
+
+      context.fillStyle = "#3f51b5";
+      context.beginPath();
+      context.arc(sizeHalf, sizeHalf, radius, 0, 2 * Math.PI, true);
+      context.fill();
+
+      context.lineWidth = radius * 0.15;
+      context.strokeStyle = "rgba(0, 0, 0, 0.3)";
+      context.beginPath();
+      context.arc(sizeHalf, sizeHalf, radius * 0.9, rad * 170, rad * 330);
+      context.stroke();
+
+      context.lineWidth = radius * 0.2;
+      context.strokeStyle = "rgba(255, 255, 255, 0.4)";
+      context.beginPath();
+      context.arc(sizeHalf, sizeHalf, radius * 0.6, rad * 35, rad * 75);
+      context.stroke();
+
+      context.lineWidth = radius * 0.1;
+      context.strokeStyle = "rgba(255, 255, 255, 0.7)";
+      context.beginPath();
+      context.arc(sizeHalf, sizeHalf, radius, 0, 2 * Math.PI, true);
+      context.stroke();
+
+      const image = context.getImageData(0, 0, size, size);
+      return { radius: sizeHalf, buffer: image.data.buffer };
+    };
+  </script>
+
+  <script type="text/javascript">
+    const worker = new Worker("./worker.js");
+
+    // init
+    {
+      const pin = createPinImage(4);
+      worker.postMessage(
+        { type: "init", payload: { pin } },
+        { transfer: [pin.buffer] }
+      );
+    }
+
+    // send coords
+    {
+      const toCode = (c) => c.charCodeAt(0);
+      const coords = Uint8Array.from(coordsSource, toCode);
+      worker.postMessage(
+        { type: "coords", payload: coords.buffer },
+        { transfer: [coords.buffer] }
+      );
+    }
+
+    ymaps.ready(() => {
+      const CanvasLayout = ymaps.templateLayoutFactory.createClass(
+        `<canvas style="transform: translate(-50%, -50%)"></canvas>`,
+        {
+          build: function () {
+            CanvasLayout.superclass.build.call(this);
+
+            const parent = this.getParentElement();
+            const canvas = parent.getElementsByTagName("canvas")[0];
+
+            const map = this.getData().geoObject.getMap();
+            const geometry = this.getData().geometry;
+
+            if (!this.inited) {
+              const render = () => {
+                const bounds = map.getBounds();
+                const size = map.container.getSize();
+                const payload = { bounds, size };
+
+                console.time("render");
+                worker.postMessage({ type: "render", payload });
+              };
+
+              const compose = (payload) => {
+                const { bounds, corner, size, buffer } = payload;
+
+                canvas.width = size[0];
+                canvas.height = size[1];
+
+                const context = canvas.getContext("2d");
+                const image = context.getImageData(...corner, ...size);
+
+                image.data.set(new Uint8ClampedArray(buffer));
+                context.putImageData(image, ...corner, ...corner, ...size);
+
+                geometry.setCoordinates(map.getCenter());
+                console.timeEnd("render");
+              };
+
+              worker.addEventListener("message", ({ data }) => {
+                if (data.type !== "compose") return;
+                return compose(data.payload);
+              });
+
+              map.events.add("boundschange", render, this);
+              render();
+
+              this.inited = true;
+            }
+          },
+        }
+      );
+
+      const center = [55.687796, 37.733753];
+      const map = (window.map = new ymaps.Map("map", { center, zoom: 10 }));
+      const [[right, top], [left, bottom]] = map.getBounds();
+
+      const geoCanvas = new ymaps.Placemark(
+        center,
+        {},
+        { iconLayout: CanvasLayout }
+      );
+
+      map.geoObjects.add(geoCanvas);
+    });
+  </script>
+</html>

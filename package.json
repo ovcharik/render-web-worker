@@ -1,0 +1,14 @@
+{
+  "name": "render-web-worker",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "start": "http-server",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "http-server": "^13.0.1"
+  }
+}
