@@ -54,6 +54,10 @@ export const config: webpack.Configuration & {
       template: resolve(__dirname, "src/index.html"),
       filename: resolve(__dirname, "index.html"),
     }),
+    new HtmlWebpackPlugin({
+      template: resolve(__dirname, "src/index.html"),
+      filename: resolve(__dirname, "dist/index.html"),
+    }),
   ],
 };
 
