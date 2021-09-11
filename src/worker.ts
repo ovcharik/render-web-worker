@@ -1,3 +1,8 @@
+import { Pin } from "./pin";
+
+type Point = [number, number];
+type Rect = [Point, Point];
+
 const { log, tan, sin, pow, sqrt, round } = Math;
 
 const RAD_1 = Math.PI / 180;
@@ -8,7 +13,7 @@ const M_RADIUS_MINOR = 6356752.3142;
 const M_RADIUS_FACTOR = (M_RADIUS - M_RADIUS_MINOR) / M_RADIUS;
 const M_ECCENT = sqrt(2 * M_RADIUS_FACTOR - pow(M_RADIUS_FACTOR, 2));
 
-const latLngToWsg84Mercator = ([lat, lng]) => {
+const latLngToWsg84Mercator = ([lat, lng]: Point) => {
   const radLng = lng * RAD_1;
   const radLat = lat * RAD_1;
 
@@ -19,89 +24,81 @@ const latLngToWsg84Mercator = ([lat, lng]) => {
   return [M_RADIUS * radLng, M_RADIUS * projLat];
 };
 
-const getLatLngToPoint = ([lbLatLng, rtLatLng], size) => {
+const getLatLngToPoint = ([lbLatLng, rtLatLng]: Rect, size: Point) => {
   const [left, bottom] = latLngToWsg84Mercator(lbLatLng);
   const [right, top] = latLngToWsg84Mercator(rtLatLng);
 
   const width = (left - right) / size[0];
-  const height = (top - bottom) / size[0];
+  const height = (top - bottom) / size[1];
 
-  return (geoPoint) => {
+  return (geoPoint: Point) => {
     const [xMerc, yMerc] = latLngToWsg84Mercator(geoPoint);
     return [round((left - xMerc) / width), round((top - yMerc) / height)];
   };
 };
 
+const blend = (color1: number, color2: number, alpha: number) => {
+  // debugger;
+  let rb = color1 & 0xff00ff;
+  let g = color1 & 0x00ff00;
+  rb += (((color2 & 0xff00ff) - rb) * alpha) >> 8;
+  g += (((color2 & 0x00ff00) - g) * alpha) >> 8;
+  return (rb & 0xff00ff) | (g & 0xff00);
+};
+
 const compose = (
-  // will be mutated
-  bgArray,
-  bgWidth,
-  bgHeight,
+  array1: Uint32Array,
+  width1: number,
+  height1: number,
 
-  // will be inserted
-  fgArray,
-  fgWidth,
-  fgHeight,
+  array2: Uint32Array,
+  width2: number,
+  height2: number,
 
-  // left-top coordinates of bg
-  bgX,
-  bgY,
-
-  blend = false
+  x1: number,
+  y1: number
 ) => {
-  let bgOffset;
+  let xOffset1;
 
-  for (let fgY = 0; fgY < fgHeight; fgY++) {
-    const bgYOffset = bgY + fgY;
-    if (bgHeight < bgYOffset) break;
+  for (let y2 = 0; y2 < height2; y2++) {
+    const yOffset1 = y1 + y2;
+    if (height1 < yOffset1) break;
 
-    bgOffset = (bgYOffset * bgWidth + bgX) * 4;
-    if (bgOffset < 0) continue;
+    xOffset1 = yOffset1 * width1 + x1;
+    if (xOffset1 < 0) continue;
 
-    for (let fgX = 0; fgX < fgWidth; fgX++) {
-      const pinOffset = (fgY * fgHeight + fgX) * 4;
-      const fgColor = fgArray.subarray(pinOffset, pinOffset + 4);
-      const bgColor = bgArray.subarray(bgOffset, bgOffset + 4);
+    for (let x2 = 0; x2 < width2; x2++) {
+      const xOffset2 = y2 * height2 + x2;
+      const color2 = array2[xOffset2];
 
-      if (fgColor[3] && bgColor.length && !bgColor[3]) {
-        if (!bgColor[3] || !blend) {
-          bgArray.set(fgColor, bgOffset);
-        } else {
-          const fgAlpha = fgColor[3] / 255.0;
-          const bgAlpha = 1 - fgAlpha;
-
-          bgArray.set(
-            [
-              bgAlpha * bgColor[0] + fgAlpha * fgColor[0],
-              bgAlpha * bgColor[1] + fgAlpha * fgColor[1],
-              bgAlpha * bgColor[2] + fgAlpha * fgColor[2],
-              bgAlpha * bgColor[3] + fgAlpha * fgColor[3],
-            ],
-            bgOffset
-          );
-        }
+      if (color2) {
+        // const color1 = array1[xOffset1];
+        array1[xOffset1] = color2;
+        // array1[xOffset1] = !color1
+        //   ? color2
+        //   : blend(color1 >> 8, color2 >> 8, (color2 & 0xff000000) >> 24);
       }
 
-      bgOffset += 4;
-      if (bgArray.length < bgOffset) break;
+      xOffset1++;
+      if (array1.length < xOffset1) break;
     }
   }
 
-  return bgArray;
+  return array1;
 };
 
-const render = (bounds, size, coords, pin) => {
+const render = (bounds: Rect, size: Point, coords: Float32Array, pin: Pin) => {
   console.time("render");
 
   const { radius: pinRadius, buffer: pinBuffer } = pin;
   const pinSize = pinRadius * 2;
-  const pinBitmap = new Uint8ClampedArray(pinBuffer);
+  const pinBitmap = new Uint32Array(pinBuffer);
 
   const getPoint = getLatLngToPoint(bounds, size);
   const [width, height] = size;
 
   const buffer = new ArrayBuffer(width * height * 4);
-  const bitmap = new Uint8ClampedArray(buffer);
+  const bitmap = new Uint32Array(buffer);
 
   for (let i = 0; i < coords.length / 2; i++) {
     const [x, y] = getPoint([coords[i * 2], coords[i * 2 + 1]]);
@@ -113,7 +110,7 @@ const render = (bounds, size, coords, pin) => {
     );
   }
 
-  corner = [0, 0];
+  const corner = [0, 0];
 
   console.timeEnd("render");
   postMessage(
@@ -122,20 +119,23 @@ const render = (bounds, size, coords, pin) => {
   );
 };
 
+let selfPin: Pin;
+let selfCoords: Float32Array;
+
 onmessage = ({ data: { type, payload } }) => {
   console.log(type, payload);
   switch (type) {
     case "init": {
-      WORKER_PIN = payload.pin;
+      selfPin = payload.pin;
       return;
     }
     case "coords": {
-      WORKER_COORDS_ARRAY = new Float32Array(payload);
+      selfCoords = new Float32Array(payload);
       return;
     }
     case "render": {
       const { bounds, size } = payload;
-      render(bounds, size, WORKER_COORDS_ARRAY, WORKER_PIN);
+      render(bounds, size, selfCoords, selfPin);
     }
   }
 };
